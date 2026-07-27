@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -38,28 +40,30 @@ func formatNetError(err error) string {
 	return err.Error()
 }
 
-// checkTarget attempts to establish a TCP connection to a given target
-func checkTarget(target string, timeout time.Duration, wg *sync.WaitGroup, results chan<- CheckResult) {
-	defer wg.Done()
-
+// checkTarget attempts to establish a TCP connection with Context support
+func checkTarget(ctx context.Context, target string, timeout time.Duration) CheckResult {
 	startTime := time.Now()
-	// Attempt TCP connection
-	conn, err := net.DialTimeout("tcp", target, timeout)
+
+	// 使用 dialer + context 可以更好地支持响应取消与精细控制
+	var dialer net.Dialer
+	dialCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	conn, err := dialer.DialContext(dialCtx, "tcp", target)
 	latency := time.Since(startTime)
 
 	if err != nil {
-		results <- CheckResult{
+		return CheckResult{
 			Target:  target,
 			Success: false,
 			Latency: latency,
 			Err:     err,
 			ErrMsg:  formatNetError(err),
 		}
-		return
 	}
-	conn.Close() // Close connection immediately after successful test
+	conn.Close() // 成功连接后立即关闭
 
-	results <- CheckResult{
+	return CheckResult{
 		Target:  target,
 		Success: true,
 		Latency: latency,
@@ -83,10 +87,8 @@ func main() {
 	fmt.Println("  Network Connectivity Checker")
 	fmt.Println("==================================================")
 
-	// Check system OS and Go environment
 	checkEnvironment()
 
-	// 1. List of IP and Port targets to test
 	targets := []string{
 		"114.114.114.114:53",
 		"8.8.8.8:53",
@@ -96,20 +98,49 @@ func main() {
 	}
 
 	timeout := 2 * time.Second
-	var wg sync.WaitGroup
+	maxConcurrency := 10 // 控制最大并发数，防止 FD 耗尽或打满出口
+
+	jobs := make(chan string, len(targets))
 	results := make(chan CheckResult, len(targets))
+
+	// 将所有待检测目标放入 jobs 通道
+	for _, t := range targets {
+		jobs <- t
+	}
+	close(jobs)
 
 	fmt.Println("--------------------------------------------------")
 	fmt.Println(" Starting concurrent connectivity check...")
 	fmt.Println("--------------------------------------------------")
 
-	// 2. Launch a goroutine for each target
-	for _, target := range targets {
-		wg.Add(1)
-		go checkTarget(target, timeout, &wg, results)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// 启动固定数量的 Worker Goroutines
+	workerCount := maxConcurrency
+	if len(targets) < workerCount {
+		workerCount = len(targets)
 	}
 
-	// 3. Wait for all goroutines in background and close channel
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for target := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					res := checkTarget(ctx, target, timeout)
+					results <- res
+				}
+			}
+		}()
+	}
+
+	// 异步等待所有工作完成并关闭 results 通道
 	go func() {
 		wg.Wait()
 		close(results)
@@ -117,7 +148,7 @@ func main() {
 
 	hasFailure := false
 
-	// 4. Read and print results in real-time
+	// 实时读取并打印结果
 	for res := range results {
 		if res.Success {
 			fmt.Printf("[SUCCESS] %-20s | Latency: %8v\n", res.Target, res.Latency.Round(time.Millisecond))
@@ -130,14 +161,13 @@ func main() {
 	fmt.Println("==================================================")
 	fmt.Println(" Connectivity check completed.")
 
-	// 如果是在 Windows 下双击运行，等待按 Enter 键，防止窗口直接闪退关闭
+	// Windows 下等待 Enter 退出，避免闪退
 	if runtime.GOOS == "windows" {
 		fmt.Println("\nPress Enter to exit...")
-		var input string
-		fmt.Scanln(&input)
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
 	}
 
-	// Linux 自动化测试时如果存在失败则返回 exit status 1
+	// Linux 下检测失败返回 exit status 1，方便被自动化脚本/CI-CD捕获
 	if hasFailure && runtime.GOOS != "windows" {
 		os.Exit(1)
 	}
