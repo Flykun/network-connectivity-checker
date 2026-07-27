@@ -1,4 +1,3 @@
-
 # Network Connectivity Checker (网络端口连通性检测工具)
 
 轻量级、并发型的网络 TCP 端口连通性检测工具，基于 Go 语言开发。支持跨平台编译，可部署于 Linux、Windows 等多种服务器及操作系统环境。
@@ -86,7 +85,6 @@ targets := []string{
     "114.114.114.114:53",
     "8.8.8.8:53",
     "1.1.1.1:53",
-    "223.5.5.5:53",
 }
 
 timeout := 2 * time.Second
