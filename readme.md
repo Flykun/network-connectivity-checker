@@ -122,10 +122,3 @@ go_learn/
    * 在 Windows 5.1 环境下执行 `build.ps1` 脚本时，如果遇到 `字符串缺少终止符` 等编码报错，请确保将 `build.ps1` 保存为 **UTF-8 with BOM** 格式。
 2. **Go 环境要求**
    * 本项目依赖 Go 1.18+ 标准库，支持静默依赖打包，无需额外的第三方 C 库支持（脚本内已强制禁用 CGO，即 `CGO_ENABLED=0`）。
-
-
-```powershell
-./build.ps1
-# 或
-./build.ps1 -App all
-```
