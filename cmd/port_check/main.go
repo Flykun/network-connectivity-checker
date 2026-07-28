@@ -1,13 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,31 +75,44 @@ func checkTarget(ctx context.Context, target string, timeout time.Duration) Chec
 
 // checkEnvironment performs runtime system architecture and OS checks
 func checkEnvironment() {
-	fmt.Printf("[INFO] Go Version  : %s\n", runtime.Version())
-	fmt.Printf("[INFO] OS/Arch     : %s/%s\n", runtime.GOOS, runtime.GOARCH)
-
-	if runtime.GOOS != "linux" {
-		fmt.Printf("[WARN] Warning: Current OS is '%s', intended target is 'linux'.\n", runtime.GOOS)
-	}
+	fmt.Printf("[INFO] Go Version : %s\n", runtime.Version())
+	fmt.Printf("[INFO] OS/Arch    : %s/%s\n", runtime.GOOS, runtime.GOARCH)
 }
 
 func main() {
+	// 1. 定义与解析命令行参数
+	targetsFlag := flag.String("t", "114.114.114.114:53,8.8.8.8:53", "指定检测目标，多个目标用逗号分隔 (例: -t \"192.168.1.1:80, 10.0.0.1:443\")")
+	timeoutFlag := flag.Duration("timeout", 2*time.Second, "单次 TCP 连接超时时间 (例: 2s, 500ms)")
+	concurrencyFlag := flag.Int("c", 10, "最大并发 Worker 数量")
+
+	flag.Parse()
+
 	fmt.Println("==================================================")
 	fmt.Println("  Network Connectivity Checker")
 	fmt.Println("==================================================")
 
 	checkEnvironment()
 
-	targets := []string{
-		"114.114.114.114:53",
-		"8.8.8.8:53",
-		"1.1.1.1:53",
-		"223.5.5.5:53",
-		"180.76.76.76:53",
+	// 2. 解析 targets 列表并清洗无效/包含空格的字符串
+	rawTargets := strings.Split(*targetsFlag, ",")
+	var targets []string
+	for _, t := range rawTargets {
+		cleaned := strings.TrimSpace(t)
+		if cleaned != "" {
+			targets = append(targets, cleaned)
+		}
 	}
 
-	timeout := 2 * time.Second
-	maxConcurrency := 10 // 控制最大并发数，防止 FD 耗尽或打满出口
+	if len(targets) == 0 {
+		fmt.Println("[ERROR] 没有有效的检测目标！请使用 -t 参数指定。")
+		os.Exit(1)
+	}
+
+	timeout := *timeoutFlag
+	maxConcurrency := *concurrencyFlag
+	if maxConcurrency <= 0 {
+		maxConcurrency = 1
+	}
 
 	jobs := make(chan string, len(targets))
 	results := make(chan CheckResult, len(targets))
@@ -110,7 +124,7 @@ func main() {
 	close(jobs)
 
 	fmt.Println("--------------------------------------------------")
-	fmt.Println(" Starting concurrent connectivity check...")
+	fmt.Printf(" 开始并发检测 [目标数: %d | 超时: %v | 并发数: %d]...\n", len(targets), timeout, maxConcurrency)
 	fmt.Println("--------------------------------------------------")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -151,24 +165,18 @@ func main() {
 	// 实时读取并打印结果
 	for res := range results {
 		if res.Success {
-			fmt.Printf("[SUCCESS] %-20s | Latency: %8v\n", res.Target, res.Latency.Round(time.Millisecond))
+			fmt.Printf("[SUCCESS] %-22s | Latency: %8v\n", res.Target, res.Latency.Round(time.Millisecond))
 		} else {
 			hasFailure = true
-			fmt.Printf("[FAILED]  %-20s | Latency: %8v | Error: %s\n", res.Target, res.Latency.Round(time.Millisecond), res.ErrMsg)
+			fmt.Printf("[FAILED]  %-22s | Latency: %8v | Error: %s\n", res.Target, res.Latency.Round(time.Millisecond), res.ErrMsg)
 		}
 	}
 
 	fmt.Println("==================================================")
 	fmt.Println(" Connectivity check completed.")
 
-	// Windows 下等待 Enter 退出，避免闪退
-	if runtime.GOOS == "windows" {
-		fmt.Println("\nPress Enter to exit...")
-		bufio.NewReader(os.Stdin).ReadBytes('\n')
-	}
-
-	// Linux 下检测失败返回 exit status 1，方便被自动化脚本/CI-CD捕获
-	if hasFailure && runtime.GOOS != "windows" {
+	// 如果有任何一个端口探测失败，返回 exit status 1，便于 CI/CD 或 Shell 脚本捕捉
+	if hasFailure {
 		os.Exit(1)
 	}
 }
