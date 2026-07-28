@@ -62,6 +62,12 @@ go_learn/
 
 #### ① 编译全部工具（默认）
 
+```PowerShell
+./build.ps1
+# 或
+./build.ps1 -App all
+```
+
 #### ② 仅编译 `port_check` 工具
 
 ```powershell
